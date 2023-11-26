@@ -1,0 +1,100 @@
+name: Continuous Integration
+
+on:
+  push:
+    branches-ignore: 'main'
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:      
+        token: ${{ secrets.PAT }}
+    - name: Run npm lint action
+      uses: ./.github/actions/lint
+
+  build:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:      
+        token: ${{ secrets.PAT }}
+    - name: Run npm build action
+      uses: ./.github/actions/build
+    - name: Make temp directories
+      run: |
+        mkdir .temp
+        cp -r .github .temp
+        cp -r dist .temp
+        cp -r public .temp
+        cp -r src .temp
+        cp index.html .temp
+        cp package.json .temp
+        cp package-lock.json .temp
+        cp tsconfig.json .temp
+        cp tsconfig.node.json .temp
+    - name: Commit to test repository
+      uses: cpina/github-action-push-to-another-repository@main
+      env:
+        API_TOKEN_GITHUB: ${{ secrets.PAT }}
+      with:
+        source-directory: .temp
+        destination-github-username: 'asa55'
+        destination-repository-name: 'test'
+
+  unit:
+    needs: [lint, build]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    - name: Run npm test action
+      uses: ./.github/actions/test-unit
+
+  sast:
+    needs: [lint, build]
+    runs-on: ${{ (matrix.language == 'swift' && 'macos-latest') || 'ubuntu-latest' }}
+    timeout-minutes: ${{ (matrix.language == 'swift' && 120) || 360 }}
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: true
+      matrix:
+        language: [ 'javascript-typescript' ]
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v2
+    - name: Autobuild
+      uses: github/codeql-action/autobuild@v2
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v2
+      with:
+        category: "/language:${{matrix.language}}"
+
+  e2e:
+    needs: [unit, sast]
+    runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright:v1.39.0-jammy
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    - name: Install dependencies
+      run: npm ci
+    - name: Run npm test action
+      run: npx playwright test
